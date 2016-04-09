@@ -1,0 +1,210 @@
+#!/usr/bin/env python
+# -*- mode: python -*-
+from __future__ import print_function
+import argparse
+import os
+import subprocess
+import socket
+import sys
+import json
+import shutil
+
+RUN_PATH = '/run/netjoin'
+DEV_NAME = 'netjoin0'
+CONFIG_PATH = '/etc/netjoin.json'
+
+LOCAL_MAIN_ADDRESS = '100.127.96.54'
+PEER_MAIN_ADDRESS = '100.127.96.55'
+
+SYSTEMD_UNIT = '''[Unit]
+Description=netjoin VPN client
+
+[Service]
+Type=notify
+ExecStart=%(path)s daemon
+NotifyAccess=main
+
+[Install]
+WantedBy=network.target'''
+
+CACERT = '''-----BEGIN CERTIFICATE-----
+MIIFGDCCBACgAwIBAgIJAIa3sX9OfBu7MA0GCSqGSIb3DQEBCwUAMIG4MQswCQYD
+VQQGEwJQTDETMBEGA1UECBMKTWFsb3BvbHNrYTEQMA4GA1UEBxQHS3Jha8OzdzEW
+MBQGA1UEChMNYXRvbXNoYXJlLm5ldDEQMA4GA1UECxMHbmV0am9pbjEbMBkGA1UE
+AxMSbmV0am9pbiBzdGFnaW5nIENBMRgwFgYDVQQpEw9uZXRqb2luIHN0YWdpbmcx
+ITAfBgkqhkiG9w0BCQEWEnJvb3RAYXRvbXNoYXJlLm5ldDAeFw0xNjA0MDIxODE0
+NDFaFw0yNjAzMzExODE0NDFaMIG4MQswCQYDVQQGEwJQTDETMBEGA1UECBMKTWFs
+b3BvbHNrYTEQMA4GA1UEBxQHS3Jha8OzdzEWMBQGA1UEChMNYXRvbXNoYXJlLm5l
+dDEQMA4GA1UECxMHbmV0am9pbjEbMBkGA1UEAxMSbmV0am9pbiBzdGFnaW5nIENB
+MRgwFgYDVQQpEw9uZXRqb2luIHN0YWdpbmcxITAfBgkqhkiG9w0BCQEWEnJvb3RA
+YXRvbXNoYXJlLm5ldDCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBAJ+Y
+oqZaT9zWp3vCtPPUGcezGDHsDMxOypxF06hPcVsEkvfcL7NIhd+14sCR/+hsHP1X
+qVXGoGtwjTj+fgbDjgDsQsB0jtGUJO5Bk+h2bhDDz4mCbxKCdwl5ekKCgRRVkmz/
+xnAvejfHjLD2SZ+JtVwzjP2RbLx+xQvYCUPgKKlCkmBKiFlgciPESRRts9W7/kXA
+KYLwOoynz49q1NIsj0b7On5ehrqimvQYUf0feLn4Mol8kjhQ5Pc0kATdUMPrbL6Q
+FeDHYp5MwLY3v5GNVn0wGdCFOZWadfk6POgEElP767Nj6lji3vn1VzkyzRmLPe//
+P70HJ6NdGGXV3DDbqP8CAwEAAaOCASEwggEdMB0GA1UdDgQWBBTTU5HmFYJjNFpb
+gVGZh5NBQgd+WDCB7QYDVR0jBIHlMIHigBTTU5HmFYJjNFpbgVGZh5NBQgd+WKGB
+vqSBuzCBuDELMAkGA1UEBhMCUEwxEzARBgNVBAgTCk1hbG9wb2xza2ExEDAOBgNV
+BAcUB0tyYWvDs3cxFjAUBgNVBAoTDWF0b21zaGFyZS5uZXQxEDAOBgNVBAsTB25l
+dGpvaW4xGzAZBgNVBAMTEm5ldGpvaW4gc3RhZ2luZyBDQTEYMBYGA1UEKRMPbmV0
+am9pbiBzdGFnaW5nMSEwHwYJKoZIhvcNAQkBFhJyb290QGF0b21zaGFyZS5uZXSC
+CQCGt7F/TnwbuzAMBgNVHRMEBTADAQH/MA0GCSqGSIb3DQEBCwUAA4IBAQAc2Kbk
+BWMK6YayEIvYrtZIBJac2Ux+cdNz3wgFCxbnUoZRi8Vv+DLKRTQek1M4FDL+WwdQ
+xpXQwq50rfvnvMUkKnkyZbNGc8os9mE/7Sw1U3jRNaBiiZ9CPcjfAxdroPcNRGri
+XaUIUi2aXir87tusRvLrCv0H8V9wSWC175uHhATe6+PyQufo1VdJ5oVaDCfP+gl6
+FYqAhEr0mMY26Vdxs/P939Zj2v/KxmSQ75gPoJCKnAYdGNU/mqN1sQE/dKo0MeVO
+SrnF9awLuOvC01wKJ19uxfpSCcz2+2u6plb+0kjiYo+Aam7DGK6ANoNyj7jLQjS3
+x/jGs3LmVCrm6ZkJ
+-----END CERTIFICATE-----
+'''
+
+def write_openvpn_config(config):
+    path = RUN_PATH + '/config.ovpn'
+    template = '''
+<connection>
+remote %(ip)s 443 udp
+nobind
+</connection>
+
+<ca>
+%(ca)s
+</ca>
+
+dev %(dev_name)s
+dev-type tun
+
+tls-client
+pull
+ifconfig-noexec
+route-noexec
+
+auth-user-pass auth.txt
+resolv-retry infinite
+
+persist-key
+persist-tun
+
+remote-cert-tls server
+ping 10
+ping-restart 60
+''' % dict(ip=config['server_ip'], ca=CACERT, dev_name=DEV_NAME)
+
+    with open(path, 'w') as f:
+        f.write(template)
+
+    with open(RUN_PATH + '/auth.txt', 'w') as f:
+        f.write('d%s\n%s\n' % (config['dev_id'], config['secret']))
+
+    os.chmod(RUN_PATH + '/auth.txt', 0o600) # just to silience OpenVPN, the parent directory is unenterable anyway
+
+def run_openvpn():
+    subprocess.check_call(['openvpn', 'config.ovpn'], cwd=RUN_PATH)
+
+def setup():
+    if not os.path.exists(RUN_PATH):
+        os.mkdir(RUN_PATH)
+
+    os.chmod(RUN_PATH, 0o700)
+
+def setup_interface(config):
+    subprocess.check_call(['openvpn', '--mktun', '--dev', DEV_NAME, '--dev-type', 'tun'])
+
+    # small race condition
+    subprocess.check_call(['ip', 'address', 'flush', 'dev', DEV_NAME])
+    subprocess.check_call(['ip', 'link', 'set', 'dev', DEV_NAME, 'up'])
+
+    for address in config['addresses']:
+        subprocess.check_call(['ip', 'address', 'add', address['address'], 'dev', DEV_NAME, 'peer', address['routes'][0]])
+
+        peer_address = address['routes'][0].split('/')[0]
+        # TODO: add more routes
+        #for route in address['routes']:
+        #    subprocess.check_call(['ip', 'route', 'add', ])
+
+def check_openvpn():
+    out = open('/dev/null', 'w')
+    if subprocess.call(['which', 'openvpn'], stdout=out) != 0:
+        sys.exit('Please install OpenVPN:\n  apt-get install -y openvpn')
+
+def load_config():
+    try:
+        data = open(CONFIG_PATH).read()
+        return json.loads(data)
+    except IOError as err:
+        sys.exit('Failed to load configuration (%s). Run `netjoin login`.' % err)
+
+def fork_deamon():
+    os.setsid()
+    os.close(0)
+    os.close(1)
+    pid = os.fork()
+    if pid != 0:
+        os._exit(0)
+
+def notify_systemd(info):
+    try:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        addr = os.environ.get('NOTIFY_SOCKET')
+        if not addr:
+            return
+
+        if addr[0] == '@':
+            addr = '\0' + addr[1:]
+
+        sock.connect(addr)
+        sock.sendall(info.encode('utf8'))
+    except Exception as err:
+        print('failed to notify systemd about start: %s' % err, file=sys.stderr)
+
+def check_root():
+    if os.getuid() != 0:
+        print('WARNING: netjoin daemon not running as root', file=sys.stderr)
+
+def run_daemon(ns):
+    check_openvpn()
+    check_root()
+    config = load_config()
+    setup()
+    setup_interface(config)
+
+    notify_systemd('READY=1')
+
+    write_openvpn_config(config)
+    run_openvpn()
+
+def run_install(ns):
+    target = '/usr/local/bin/netjoin'
+    shutil.copy(__file__, target)
+    os.chmod(target, 0o755)
+
+    with open('/etc/systemd/system/netjoin.service', 'w') as f:
+        f.write(SYSTEMD_UNIT % dict(path=target))
+
+    subprocess.check_call(['systemctl', 'enable', 'netjoin'])
+
+def main():
+    global RUN_PATH, CONFIG_PATH
+
+    parser = argparse.ArgumentParser(
+        description='netjoin client',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument('--run-path', default=RUN_PATH, help='where to store runtime temporary files')
+    parser.add_argument('--config-path', default=CONFIG_PATH, help='path to the config file')
+
+    subparsers = parser.add_subparsers(dest='command')
+    daemon = subparsers.add_parser('daemon', help='run the VPN daemon')
+    # daemon.add_argument('-f', '--foreground', help="don't daemonize", action='store_true')
+    install = subparsers.add_parser('install', help='install the daemon to system directories')
+    ns = parser.parse_args()
+
+    RUN_PATH = ns.run_path
+    CONFIG_PATH = ns.config_path
+
+    if ns.command == 'daemon':
+        run_daemon(ns)
+    elif ns.command == 'install':
+        run_install(ns)
+
+if __name__ == '__main__':
+    main()
