@@ -113,6 +113,7 @@ def setup_interface(config):
     # small race condition
     subprocess.check_call(['ip', 'address', 'flush', 'dev', DEV_NAME])
     subprocess.check_call(['ip', 'link', 'set', 'dev', DEV_NAME, 'up'])
+    subprocess.check_call(['ip', 'address', 'add', LOCAL_MAIN_ADDRESS, 'dev', DEV_NAME, 'peer', PEER_MAIN_ADDRESS])
 
     for address in config['addresses']:
         subprocess.check_call(['ip', 'address', 'add', address['address'], 'dev', DEV_NAME, 'peer', address['routes'][0]])
