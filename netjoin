@@ -8,6 +8,9 @@ import socket
 import sys
 import json
 import shutil
+import signal
+
+config = None
 
 RUN_PATH = '/run/netjoin'
 DEV_NAME = 'netjoin0'
@@ -59,7 +62,7 @@ x/jGs3LmVCrm6ZkJ
 -----END CERTIFICATE-----
 '''
 
-def write_openvpn_config(config):
+def write_openvpn_config():
     path = RUN_PATH + '/config.ovpn'
     template = '''
 <connection>
@@ -73,6 +76,9 @@ nobind
 
 dev %(dev_name)s
 dev-type tun
+
+up "/bin/sh ./upscript.sh"
+script-security 2
 
 tls-client
 pull
@@ -93,12 +99,16 @@ ping-restart 60
     with open(path, 'w') as f:
         f.write(template)
 
+    with open(RUN_PATH + '/upscript.sh', 'w') as f:
+        f.write('#!/bin/sh\nkill -USR1 %s\n' % os.getpid())
+
     with open(RUN_PATH + '/auth.txt', 'w') as f:
         f.write('d%s\n%s\n' % (config['dev_id'], config['secret']))
 
     os.chmod(RUN_PATH + '/auth.txt', 0o600) # just to silience OpenVPN, the parent directory is unenterable anyway
 
 def run_openvpn():
+    signal.signal(signal.SIGUSR1, lambda *_: setup_interface())
     subprocess.check_call(['openvpn', 'config.ovpn'], cwd=RUN_PATH)
 
 def setup():
@@ -107,8 +117,8 @@ def setup():
 
     os.chmod(RUN_PATH, 0o700)
 
-def setup_interface(config):
-    subprocess.check_call(['openvpn', '--mktun', '--dev', DEV_NAME, '--dev-type', 'tun'])
+def setup_interface():
+    subprocess.call(['openvpn', '--mktun', '--dev', DEV_NAME, '--dev-type', 'tun'])
 
     # small race condition
     subprocess.check_call(['ip', 'address', 'flush', 'dev', DEV_NAME])
@@ -165,16 +175,18 @@ def check_root():
 def run_daemon(ns):
     check_openvpn()
     check_root()
+    global config
     config = load_config()
     setup()
-    setup_interface(config)
+    setup_interface()
 
     notify_systemd('READY=1')
 
-    write_openvpn_config(config)
+    write_openvpn_config()
     run_openvpn()
 
 def run_install(ns):
+    check_openvpn()
     target = '/usr/local/bin/netjoin'
     shutil.copy(__file__, target)
     os.chmod(target, 0o755)
