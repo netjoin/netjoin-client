@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # -*- mode: python -*-
 from __future__ import print_function
 import argparse
@@ -9,12 +9,17 @@ import sys
 import json
 import shutil
 import signal
+import http.client
+import urllib.parse
+import json
 
 config = None
 
 RUN_PATH = '/run/netjoin'
 DEV_NAME = 'netjoin0'
-CONFIG_PATH = '/etc/netjoin.json'
+CONFIG_PATH = '/etc/netjoin.conf'
+
+API_HOSTNAME = 'netjoinstaging.atomshare.net'
 
 LOCAL_MAIN_ADDRESS = '100.127.96.54'
 PEER_MAIN_ADDRESS = '100.127.96.55'
@@ -70,6 +75,10 @@ remote %(ip)s 443 udp
 nobind
 </connection>
 
+<connection>
+remote %(ip)s 443 tcp-client
+</connection>
+
 <ca>
 %(ca)s
 </ca>
@@ -103,13 +112,14 @@ ping-restart 60
         f.write('#!/bin/sh\nkill -USR1 %s\n' % os.getpid())
 
     with open(RUN_PATH + '/auth.txt', 'w') as f:
-        f.write('d%s\n%s\n' % (config['dev_id'], config['secret']))
+        f.write('d%s+client=linuxv1\n%s\n' % (config['dev_id'], config['secret']))
 
     os.chmod(RUN_PATH + '/auth.txt', 0o600) # just to silience OpenVPN, the parent directory is unenterable anyway
 
 def run_openvpn():
     signal.signal(signal.SIGUSR1, lambda *_: setup_interface())
-    subprocess.check_call(['openvpn', 'config.ovpn'], cwd=RUN_PATH)
+    status = subprocess.call(['openvpn', 'config.ovpn'], cwd=RUN_PATH)
+    sys.exit(status)
 
 def setup():
     if not os.path.exists(RUN_PATH):
@@ -185,8 +195,41 @@ def run_daemon(ns):
     write_openvpn_config()
     run_openvpn()
 
+def request(method, path, body, tunnel=False):
+    if API_HOSTNAME == 'localhost:8000':
+        conn = http.client.HTTPConnection(API_HOSTNAME)
+    else:
+        conn = http.client.HTTPSConnection(API_HOSTNAME)
+
+    if tunnel:
+        conn.set_tunnel(PEER_MAIN_ADDRESS, 8090)
+
+    conn.request(method, path, body,
+                 {"Content-type": "application/x-www-form-urlencoded"} if body else {})
+    resp = conn.getresponse()
+    if resp.status != 200:
+        raise Exception('request returned %d' % resp.status)
+    data = resp.read()
+    conn.close()
+    return json.loads(data.decode('utf8'))
+
+def run_login(ns):
+    token = ns.token
+    resp = request('POST', '/api/v1/device-login', urllib.parse.urlencode(dict(token=token)), tunnel=False)
+    config = {
+        'dev_id': resp['dev_id'],
+        'secret': resp['secret'],
+        'addresses': resp['addresses'],
+        'geo_hostname': resp['geo_hostname'],
+        'server_ip': resp['server_ip'],
+    }
+
+    with open(CONFIG_PATH, 'w') as w:
+        w.write(json.dumps(config, indent=4))
+
 def run_install(ns):
     check_openvpn()
+    run_login(ns)
     target = '/usr/local/bin/netjoin'
     shutil.copy(__file__, target)
     os.chmod(target, 0o755)
@@ -197,27 +240,39 @@ def run_install(ns):
     subprocess.check_call(['systemctl', 'enable', 'netjoin'])
 
 def main():
-    global RUN_PATH, CONFIG_PATH
+    global RUN_PATH, CONFIG_PATH, API_HOSTNAME
 
     parser = argparse.ArgumentParser(
         description='netjoin client',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--run-path', default=RUN_PATH, help='where to store runtime temporary files')
     parser.add_argument('--config-path', default=CONFIG_PATH, help='path to the config file')
+    parser.add_argument('--api-hostname', default=API_HOSTNAME, help='API hostname')
 
     subparsers = parser.add_subparsers(dest='command')
     daemon = subparsers.add_parser('daemon', help='run the VPN daemon')
     # daemon.add_argument('-f', '--foreground', help="don't daemonize", action='store_true')
     install = subparsers.add_parser('install', help='install the daemon to system directories')
+
+    install.add_argument('token', nargs='?',
+                         help='also create /etc/netjoin.conf by logging in using TOKEN')
+    login = subparsers.add_parser('login', help='create /etc/netjoin.conf')
+    login.add_argument('token')
+
     ns = parser.parse_args()
 
     RUN_PATH = ns.run_path
     CONFIG_PATH = ns.config_path
+    API_HOSTNAME = ns.api_hostname
 
     if ns.command == 'daemon':
         run_daemon(ns)
     elif ns.command == 'install':
         run_install(ns)
+    elif ns.command == 'login':
+        run_login(ns)
+    else:
+        parser.print_help()
 
 if __name__ == '__main__':
     main()
