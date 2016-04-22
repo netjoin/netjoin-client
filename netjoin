@@ -237,7 +237,9 @@ def run_install(ns):
     with open('/etc/systemd/system/netjoin.service', 'w') as f:
         f.write(SYSTEMD_UNIT % dict(path=target))
 
+    run_login(ns)
     subprocess.check_call(['systemctl', 'enable', 'netjoin'])
+    print('Start netjoin with:\n\tsystemctl start netjoin')
 
 def main():
     global RUN_PATH, CONFIG_PATH, API_HOSTNAME
