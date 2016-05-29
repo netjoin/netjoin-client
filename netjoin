@@ -19,7 +19,7 @@ RUN_PATH = '/run/netjoin'
 DEV_NAME = 'netjoin0'
 CONFIG_PATH = '/etc/netjoin.conf'
 
-API_HOSTNAME = 'netjoinstaging.atomshare.net'
+API_HOSTNAME = 'netjo.in'
 
 LOCAL_MAIN_ADDRESS = '100.127.96.54'
 PEER_MAIN_ADDRESS = '100.127.96.55'
