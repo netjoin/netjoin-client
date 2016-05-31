@@ -227,7 +227,6 @@ def run_login(ns):
 
 def run_install(ns):
     check_openvpn()
-    run_login(ns)
     target = '/usr/local/bin/netjoin'
     shutil.copy(__file__, target)
     os.chmod(target, 0o755)
@@ -235,12 +234,17 @@ def run_install(ns):
     with open('/etc/systemd/system/netjoin.service', 'w') as f:
         f.write(SYSTEMD_UNIT % dict(path=target))
 
-    run_login(ns)
     subprocess.check_call(['systemctl', 'enable', 'netjoin'])
+
+    if ns.token:
+        run_login(ns)
+    else:
+        print('Link this device to Netjoin on https://netjo.in/app/add_device')
+
     print('Start netjoin with:\n\tsystemctl start netjoin')
 
 def main():
-    global RUN_PATH, CONFIG_PATH, API_HOSTNAME
+    global RUN_PATH, CONFIG_PATH, API_HOSTNAME, CACERT
 
     parser = argparse.ArgumentParser(
         description='netjoin client',
@@ -248,6 +252,7 @@ def main():
     parser.add_argument('--run-path', default=RUN_PATH, help='where to store runtime temporary files')
     parser.add_argument('--config-path', default=CONFIG_PATH, help='path to the config file')
     parser.add_argument('--api-hostname', default=API_HOSTNAME, help='API hostname')
+    parser.add_argument('--ca-cert', default='<builtin>', help='alternative CA certificate file')
 
     subparsers = parser.add_subparsers(dest='command')
     daemon = subparsers.add_parser('daemon', help='run the VPN daemon')
@@ -264,6 +269,8 @@ def main():
     RUN_PATH = ns.run_path
     CONFIG_PATH = ns.config_path
     API_HOSTNAME = ns.api_hostname
+    if ns.ca_cert != '<builtin>':
+        CACERT = open(ns.ca_cert, 'r').read()
 
     if ns.command == 'daemon':
         run_daemon(ns)
