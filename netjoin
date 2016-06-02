@@ -12,6 +12,8 @@ import signal
 import http.client
 import urllib.parse
 import json
+import threading
+import time
 
 config = None
 
@@ -190,16 +192,44 @@ def run_daemon(ns):
     notify_systemd('READY=1')
 
     write_openvpn_config()
+    threading.Thread(target=run_config_updater).start()
     run_openvpn()
+
+def update_config():
+    global config
+    resp = request('POST', '/api/v1/get-config', urllib.parse.urlencode(dict(secret=config['secret'])), tunnel=False)
+    if write_config_from_response(resp):
+        print('Updating configuration.')
+        config = load_config()
+        setup_interface()
+
+def run_config_updater():
+    time.sleep(3)
+    while True:
+        try:
+            update_config()
+        except Exception as err:
+            print('Error when updating configuration: %r' % (err))
+            time.sleep(3)
+            continue
+
+        time.sleep(3600)
 
 def request(method, path, body, tunnel=False):
     if API_HOSTNAME == 'localhost:8000':
-        conn = http.client.HTTPConnection(API_HOSTNAME)
+        clazz = http.client.HTTPConnection
     else:
-        conn = http.client.HTTPSConnection(API_HOSTNAME)
+        clazz = http.client.HTTPSConnection
 
     if tunnel:
-        conn.set_tunnel(PEER_MAIN_ADDRESS, 8090)
+        conn = clazz(PEER_MAIN_ADDRESS, 8090)
+        if ':' in API_HOSTNAME:
+            host, port = API_HOSTNAME.split(':')
+            conn.set_tunnel(host, int(port))
+        else:
+            conn.set_tunnel(API_HOSTNAME, 443)
+    else:
+        conn = clazz(API_HOSTNAME)
 
     conn.request(method, path, body,
                  {"Content-type": "application/x-www-form-urlencoded"} if body else {})
@@ -210,9 +240,7 @@ def request(method, path, body, tunnel=False):
     conn.close()
     return json.loads(data.decode('utf8'))
 
-def run_login(ns):
-    token = ns.token
-    resp = request('POST', '/api/v1/device-login', urllib.parse.urlencode(dict(token=token)), tunnel=False)
+def write_config_from_response(resp):
     config = {
         'dev_id': resp['dev_id'],
         'secret': resp['secret'],
@@ -221,9 +249,27 @@ def run_login(ns):
         'server_ip': resp['server_ip'],
     }
 
-    with open(CONFIG_PATH, 'w') as w:
-        w.write(json.dumps(config, indent=4))
-    os.chmod(CONFIG_PATH, 0o600)
+    new_content = json.dumps(config, indent=4, sort_keys=True)
+    try:
+        with open(CONFIG_PATH, 'r') as w:
+            old_content = w.read()
+    except IOError:
+        old_content = None
+
+    if new_content != old_content:
+        with open(CONFIG_PATH, 'w') as w:
+            w.write(new_content)
+
+        os.chmod(CONFIG_PATH, 0o600)
+
+        return True
+    else:
+        return False
+
+def run_login(ns):
+    token = ns.token
+    resp = request('POST', '/api/v1/device-login', urllib.parse.urlencode(dict(token=token)), tunnel=False)
+    write_config_from_response(resp)
 
 def run_install(ns):
     check_openvpn()
